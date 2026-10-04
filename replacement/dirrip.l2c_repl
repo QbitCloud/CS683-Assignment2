@@ -2,10 +2,10 @@
 #include <climits>
 
 #define maxRRPV 3
-#define SET_PARTITION 16
-#define RRIP_LEAD 5
-#define IRRIP_LEAD 11
-#define WINDOW 100000
+#define SET_PARTITION 32
+#define RRIP_LEAD 19
+#define IRRIP_LEAD 23
+#define WINDOW 1000
 
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 
@@ -16,6 +16,8 @@ uint64_t rrip_total_access;
 uint64_t rrip_total_miss;
 uint64_t rrip_data_access;
 uint64_t rrip_data_miss;
+uint64_t rrip_inst_miss;
+uint64_t rrip_inst_access;
 
 uint64_t irrip_total_access;
 uint64_t irrip_total_miss;
@@ -42,12 +44,13 @@ void CACHE::l2c_initialize_replacement()
     rrip_total_miss = 0;
     rrip_data_access = 0;
     rrip_data_miss = 0;
+    rrip_inst_miss = 0;
+    rrip_inst_access = 0;
 
     irrip_total_access = 0;
     irrip_total_miss = 0;
     irrip_inst_access = 0;
     irrip_inst_miss = 0;
-
 
     for (int i=0; i<L2C_SET; i++) {
         for (int j=0; j<L2C_WAY; j++) {
@@ -62,7 +65,7 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, c
     if(set % SET_PARTITION == RRIP_LEAD) 
         return find_victim_rrip(set);
     else if(set % SET_PARTITION == IRRIP_LEAD)
-        return find_victim_irrip(set,current_set);
+        return find_victim_rrip(set);
     else {
         if(!isIRRIP)
             return find_victim_rrip(set);
@@ -105,9 +108,9 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
     
     if(set % SET_PARTITION == RRIP_LEAD) 
-        l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction,false);
+        l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction, false);
     else if(set % SET_PARTITION == IRRIP_LEAD)
-        l2c_update_replacement_state_irrip(set, way, hit, block[set][way].instruction, false);
+        l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction, false);
     else {
         if(!isIRRIP)
             l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction,true);
@@ -183,6 +186,8 @@ void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, 
             rrip_total_miss++;
             if(!isInstruction) {
                 rrip_data_miss++;
+            } else {
+                rrip_inst_miss++;
             }
         }
     }
@@ -190,6 +195,8 @@ void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, 
         rrip_total_access++;
         if(!isInstruction) {
             rrip_data_access++;
+        } else {
+            rrip_inst_access++;
         }
         win_ctr++;
     }
@@ -236,9 +243,9 @@ void update_PSEL()
         return;
 
     double rrip_score = ((double)rrip_data_access + rrip_data_miss) / (rrip_total_access + rrip_total_miss);
-    double irrip_score = ((double)irrip_inst_access + irrip_inst_miss) / (irrip_total_access + irrip_total_miss);
+    double rrip_score2 = ((double)rrip_inst_access + rrip_inst_miss) / (rrip_total_access + rrip_total_miss);
 
-    isIRRIP = irrip_score > 0.25;
-    isIRRIP = !(rrip_score > 0.85);
+    isIRRIP = rrip_score2 > 0.25;
     win_ctr = 0;
+
 }

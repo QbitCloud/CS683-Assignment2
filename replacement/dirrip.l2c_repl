@@ -1,0 +1,244 @@
+#include "cache.h"
+#include <climits>
+
+#define maxRRPV 3
+#define SET_PARTITION 16
+#define RRIP_LEAD 5
+#define IRRIP_LEAD 11
+#define WINDOW 100000
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+
+int win_ctr;
+bool isIRRIP;
+
+uint64_t rrip_total_access;
+uint64_t rrip_total_miss;
+uint64_t rrip_data_access;
+uint64_t rrip_data_miss;
+
+uint64_t irrip_total_access;
+uint64_t irrip_total_miss;
+uint64_t irrip_inst_access;
+uint64_t irrip_inst_miss;
+
+uint32_t find_victim_rrip(uint32_t set);
+uint32_t find_victim_irrip(uint32_t set, const BLOCK *current_set);
+
+void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isNormal);
+void l2c_update_replacement_state_irrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isNormal);
+
+void update_PSEL();
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize SRRIP state for L2C" << endl;
+
+    win_ctr = 0;
+    isIRRIP = true;
+
+    rrip_total_access = 0;
+    rrip_total_miss = 0;
+    rrip_data_access = 0;
+    rrip_data_miss = 0;
+
+    irrip_total_access = 0;
+    irrip_total_miss = 0;
+    irrip_inst_access = 0;
+    irrip_inst_miss = 0;
+
+
+    for (int i=0; i<L2C_SET; i++) {
+        for (int j=0; j<L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+        }
+    }
+}
+
+// find replacement victim
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    if(set % SET_PARTITION == RRIP_LEAD) 
+        return find_victim_rrip(set);
+    else if(set % SET_PARTITION == IRRIP_LEAD)
+        return find_victim_irrip(set,current_set);
+    else {
+        if(!isIRRIP)
+            return find_victim_rrip(set);
+        else 
+            return find_victim_irrip(set,current_set);
+    }
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit)
+{
+    string TYPE_NAME;
+    if (type == LOAD)
+        TYPE_NAME = "LOAD";
+    else if (type == RFO)
+        TYPE_NAME = "RFO";
+    else if (type == PREFETCH)
+        TYPE_NAME = "PF";
+    else if (type == WRITEBACK)
+        TYPE_NAME = "WB";
+    else if (type == LOAD_TRANSLATION)
+	TYPE_NAME = "L_TN";
+    else if (type == PREFETCH_TRANSLATION)
+	TYPE_NAME = "P_TN";
+    else if (type == TRANSLATION_FROM_L1D)
+	TYPE_NAME = "TN_L1D";
+    else
+        assert(0);
+
+    if (hit)
+        TYPE_NAME += "_HIT";
+    else
+        TYPE_NAME += "_MISS";
+
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+
+    // uncomment this line to see the L2C accesses
+    // cout << "CPU: " << cpu << "  L2C " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
+    // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
+    
+    if(set % SET_PARTITION == RRIP_LEAD) 
+        l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction,false);
+    else if(set % SET_PARTITION == IRRIP_LEAD)
+        l2c_update_replacement_state_irrip(set, way, hit, block[set][way].instruction, false);
+    else {
+        if(!isIRRIP)
+            l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction,true);
+        else 
+            l2c_update_replacement_state_irrip(set, way, hit, block[set][way].instruction,true);
+    }
+}
+
+// use this function to print out your own stats at the end of simulation
+void CACHE::l2c_replacement_final_stats()
+{
+
+}
+
+uint32_t find_victim_rrip(uint32_t set)
+{
+    while (1)
+    {
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                return i;
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+uint32_t find_victim_irrip(uint32_t set, const BLOCK *current_set)
+{
+    while (1)
+    {
+        int inst_maxRRPV_index = -1;
+
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                {
+                    if(!current_set[i].instruction)
+                        return i;
+                    else {
+                        if(inst_maxRRPV_index == -1)
+                            inst_maxRRPV_index = i;
+                    }
+                }
+
+        if(inst_maxRRPV_index != -1) {
+            for (int i=0; i<L2C_WAY; i++)
+                if (l2_rrpv[set][i] == maxRRPV-1)
+                    if(!current_set[i].instruction)
+                        return i;
+            return inst_maxRRPV_index;    
+        }
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isNormal) 
+{
+    if (hit)
+        l2_rrpv[set][way] = 0;
+    else {
+        l2_rrpv[set][way] = maxRRPV-1;
+        if(!isNormal) {
+            rrip_total_miss++;
+            if(!isInstruction) {
+                rrip_data_miss++;
+            }
+        }
+    }
+    if(!isNormal) {
+        rrip_total_access++;
+        if(!isInstruction) {
+            rrip_data_access++;
+        }
+        win_ctr++;
+    }
+    if(win_ctr >= WINDOW) update_PSEL();
+}
+
+void l2c_update_replacement_state_irrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isNormal) 
+{
+    if (hit) {
+        if (isInstruction) {
+            l2_rrpv[set][way] = 0;
+        }
+        else {
+            if (l2_rrpv[set][way] > 0)
+                l2_rrpv[set][way]--;
+        }
+    }
+    else {
+        if(isInstruction)
+            l2_rrpv[set][way] = maxRRPV-1;
+        else 
+            l2_rrpv[set][way] = maxRRPV;
+
+        if(!isNormal) {
+            irrip_total_miss++;
+            if(isInstruction) {
+                irrip_inst_miss++;
+            }
+        }
+    }
+    if(!isNormal) {
+        irrip_total_access++;
+        if(isInstruction) {
+            irrip_inst_access++;
+        }
+        win_ctr++;
+    }
+    if(win_ctr >= WINDOW) update_PSEL();
+}
+
+void update_PSEL() 
+{
+    if ((rrip_total_access + rrip_total_miss) == 0 || (irrip_total_access + irrip_total_miss) == 0)
+        return;
+
+    double rrip_score = ((double)rrip_data_access + rrip_data_miss) / (rrip_total_access + rrip_total_miss);
+    double irrip_score = ((double)irrip_inst_access + irrip_inst_miss) / (irrip_total_access + irrip_total_miss);
+
+    isIRRIP = irrip_score > 0.25;
+    isIRRIP = !(rrip_score > 0.85);
+    win_ctr = 0;
+}

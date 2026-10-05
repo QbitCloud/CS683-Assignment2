@@ -182,7 +182,6 @@ void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, 
         } else {
             rrip_inst_access++;
         }
-        WINCTR++;
     }
     update_POLICY();
 }

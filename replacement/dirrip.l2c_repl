@@ -5,7 +5,7 @@
 
 #define maxRRPV 3
 #define SET_PARTITION 256
-#define WINDOW 1000
+#define WINDOW 0
 
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 vector<int> LEADERS = {77,29,191,222,1};

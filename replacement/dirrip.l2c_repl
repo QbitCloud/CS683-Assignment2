@@ -5,7 +5,6 @@
 
 #define maxRRPV 3
 #define SET_PARTITION 256
-#define WINDOW 0
 
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 vector<int> LEADERS = {77,29,191,222,1};
@@ -33,7 +32,6 @@ void CACHE::l2c_initialize_replacement()
 {
     cout << "Initialize SRRIP state for L2C" << endl;
 
-    WINCTR = 0;
     IRRIP = true;
 
     rrip_total_access = 0;
@@ -187,7 +185,7 @@ void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, 
         }
         WINCTR++;
     }
-    if(WINCTR >= WINDOW) update_POLICY();
+    update_POLICY();
 }
 
 void l2c_update_replacement_state_irrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction) 
@@ -215,12 +213,10 @@ void update_POLICY()
         return;
 
     double inst_ratio =
-        (double)(rrip_inst_miss) /
-        (rrip_total_miss);
+        (double)(rrip_inst_miss) / (rrip_total_miss);
 
     double data_ratio =
-        (double)(rrip_data_miss) /
-        (rrip_total_miss);
+        (double)(rrip_data_miss) / (rrip_total_miss);
 
     if (!IRRIP) {
         if (inst_ratio > 0.25)
@@ -230,6 +226,4 @@ void update_POLICY()
         if (inst_ratio < 0.25 || data_ratio > 0.85)
             IRRIP = false;
     }
-
-    WINCTR = 0;
 }

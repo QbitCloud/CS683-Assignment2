@@ -9,7 +9,6 @@
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 vector<int> LEADERS = {77,29,191,222,1};
 
-int WINCTR;
 bool IRRIP;
 
 uint64_t rrip_total_access;

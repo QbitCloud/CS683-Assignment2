@@ -1,6 +1,6 @@
 #include "cache.h"
 
-#define maxRRPV 3
+#define maxRRPV 7
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 
 // initialize replacement state
@@ -41,6 +41,21 @@ uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, c
                         return i;
             return inst_maxRRPV_index;    
         }
+        /*if(inst_maxRRPV_index != -1) {      // sample testing for 3 bit rrpv making the cutoff at 4(100) the msb as 1
+            for (int i=0; i<L2C_WAY; i++)
+                if (l2_rrpv[set][i] == maxRRPV-2)
+                    if(!current_set[i].instruction)
+                        return i;
+            return inst_maxRRPV_index;    
+        }
+        if(inst_maxRRPV_index != -1) {
+            for (int i=0; i<L2C_WAY; i++)
+                if (l2_rrpv[set][i] == maxRRPV-3)   // mrpv-3 = 4 
+                    if(!current_set[i].instruction)
+                        return i;
+            return inst_maxRRPV_index;    
+        } */ 
+        // this block to increment after checking for -2,-3 then incrementing by 1 feels foolish(+4) for now commenting out.
 
         for (int i=0; i<L2C_WAY; i++)
             l2_rrpv[set][i]++;
@@ -96,12 +111,13 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
                 l2_rrpv[set][way]--;
         }
     }
-    else {
+    //trying with no logic to act during the case of cache miss as it is handled by evict
+    /*else {
         if(block[set][way].instruction)
-            l2_rrpv[set][way] = maxRRPV-1;
+            l2_rrpv[set][way] = maxRRPV-3; //instruction 
         else 
             l2_rrpv[set][way] = maxRRPV;
-    }
+    }*/
 }
 
 // use this function to print out your own stats at the end of simulation

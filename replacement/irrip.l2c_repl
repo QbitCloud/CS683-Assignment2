@@ -15,7 +15,10 @@ void CACHE::l2c_initialize_replacement()
     }
 }
 
-// find replacement victim
+// victim selection from IRRIP 
+// if data at 3 evict 
+// if data at 2 and instr at 3 still evict data from 2
+// if data at <2 and instr at 3 then only evict instr
 uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
 {
     // look for the maxRRPV line
@@ -84,6 +87,9 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     // cout << "CPU: " << cpu << "  L2C " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
     // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
     
+    // IRRIP updation logic 
+    // insert : data 3, instr 2
+    // hit promotion : data: curruntRRPV - 1, instr: 0
     if (hit)
     {
         if (block[set][way].instruction)

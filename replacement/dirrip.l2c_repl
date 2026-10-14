@@ -39,7 +39,7 @@ void CACHE::l2c_initialize_replacement()
 {
     cout << "Initialize DI-RRIP state for L2C" << endl;
 
-    // taking IRRIP by on starting phase
+    // taking DI-RRIP by on starting phase
     IRRIP = true;
 
     // counter init
@@ -256,7 +256,7 @@ void update_POLICY()
             IRRIP = true;
     }
     else {
-        if (inst_ratio < 0.25 || data_ratio > 0.85)
+        if (inst_ratio < THRESHOLD || data_ratio > 0.85)
             IRRIP = false;
     }
 }

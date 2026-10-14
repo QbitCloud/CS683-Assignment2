@@ -1,0 +1,226 @@
+#include "cache.h"
+#include <climits>
+#include <vector>
+#include <algorithm> 
+
+#define maxRRPV 3
+#define SET_PARTITION 256
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+vector<int> LEADERS = {77,29,191,222,1};
+
+bool IRRIP;
+
+uint64_t rrip_total_access;
+uint64_t rrip_total_miss;
+uint64_t rrip_data_access;
+uint64_t rrip_data_miss;
+uint64_t rrip_inst_miss;
+uint64_t rrip_inst_access;
+
+uint32_t find_victim_rrip(uint32_t set);
+uint32_t find_victim_irrip(uint32_t set, const BLOCK *current_set);
+
+void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isNormal, bool isPrefetch);
+void l2c_update_replacement_state_irrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isPrefetch);
+
+void update_POLICY();
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize SRRIP state for L2C" << endl;
+
+    IRRIP = true;
+
+    rrip_total_access = 0;
+    rrip_total_miss = 0;
+    rrip_data_access = 0;
+    rrip_data_miss = 0;
+    rrip_inst_miss = 0;
+    rrip_inst_access = 0;
+
+    for (int i=0; i<L2C_SET; i++) {
+        for (int j=0; j<L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+        }
+    }
+}
+
+// find replacement victim
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    if(find(LEADERS.begin(), LEADERS.end(), set % SET_PARTITION) != LEADERS.end()) 
+        return find_victim_rrip(set);
+    else {
+        if(!IRRIP)
+            return find_victim_rrip(set);
+        else 
+            return find_victim_irrip(set,current_set);
+    }
+}
+
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit)
+{
+    string TYPE_NAME;
+    if (type == LOAD)
+        TYPE_NAME = "LOAD";
+    else if (type == RFO)
+        TYPE_NAME = "RFO";
+    else if (type == PREFETCH)
+        TYPE_NAME = "PF";
+    else if (type == WRITEBACK)
+        TYPE_NAME = "WB";
+    else if (type == LOAD_TRANSLATION)
+        TYPE_NAME = "L_TN";
+    else if (type == PREFETCH_TRANSLATION)
+        TYPE_NAME = "P_TN";
+    else if (type == TRANSLATION_FROM_L1D)
+        TYPE_NAME = "TN_L1D";
+    else
+        assert(0);
+
+    if (hit)
+        TYPE_NAME += "_HIT";
+    else
+        TYPE_NAME += "_MISS";
+
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+
+    // uncomment this line to see the L2C accesses
+    // cout << "CPU: " << cpu << "  L2C " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
+    // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
+
+    bool isPrefetch = (type == PREFETCH);
+    
+    if(find(LEADERS.begin(), LEADERS.end(), set % SET_PARTITION) != LEADERS.end())
+        l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction, false, isPrefetch);
+    else {
+        if(!IRRIP)
+            l2c_update_replacement_state_rrip(set, way, hit, block[set][way].instruction, true, isPrefetch);
+        else 
+            l2c_update_replacement_state_irrip(set, way, hit, block[set][way].instruction, isPrefetch);
+    }
+}
+
+void CACHE::l2c_replacement_final_stats()
+{
+
+}
+
+uint32_t find_victim_rrip(uint32_t set)
+{
+    while (1)
+    {
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                return i;
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    assert(0);
+    return 0;
+}
+
+uint32_t find_victim_irrip(uint32_t set, const BLOCK *current_set)
+{
+    while (1)
+    {
+        int inst_maxRRPV_index = -1;
+
+        for (int i=0; i<L2C_WAY; i++)
+            if (l2_rrpv[set][i] == maxRRPV)
+                {
+                    if(!current_set[i].instruction)
+                        return i;
+                    else {
+                        if(inst_maxRRPV_index == -1)
+                            inst_maxRRPV_index = i;
+                    }
+                }
+
+        if(inst_maxRRPV_index != -1) {
+            for (int i=0; i<L2C_WAY; i++)
+                if (l2_rrpv[set][i] == maxRRPV-1)
+                    if(!current_set[i].instruction)
+                        return i;
+            return inst_maxRRPV_index;    
+        }
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+void l2c_update_replacement_state_rrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isNormal, bool isPrefetch) 
+{
+    if (hit)
+        l2_rrpv[set][way] = 0;
+    else {
+        l2_rrpv[set][way] = maxRRPV-1;
+        if(!isNormal) {
+            rrip_total_miss++;
+            if(!isInstruction) {
+                rrip_data_miss++;
+            } else {
+                rrip_inst_miss++;
+            }
+        }
+    }
+    if(!isNormal) {
+        rrip_total_access++;
+        if(!isInstruction) {
+            rrip_data_access++;
+        } else {
+            rrip_inst_access++;
+        }
+    }
+    update_POLICY();
+}
+
+void l2c_update_replacement_state_irrip(uint32_t set, uint32_t way, uint8_t hit, uint8_t isInstruction, bool isPrefetch) 
+{
+    if (hit) {
+        if (isInstruction) {
+            l2_rrpv[set][way] = 0;
+        }
+        else {
+            if (l2_rrpv[set][way] > 0)
+                l2_rrpv[set][way]--;
+        }
+    }
+    else {
+        if (isInstruction || isPrefetch)
+            l2_rrpv[set][way] = maxRRPV-1;   // instruction or prefetched block
+        else 
+            l2_rrpv[set][way] = maxRRPV;     // demand data block
+    }
+}
+
+void update_POLICY()
+{
+    if (rrip_total_access == 0 || rrip_total_miss == 0)  
+        return;
+
+    double inst_ratio =
+        (double)(rrip_inst_miss) / (rrip_total_miss);
+
+    double data_ratio =
+        (double)(rrip_data_miss) / (rrip_total_miss);
+
+    if (!IRRIP) {
+        if (inst_ratio > 0.25)
+            IRRIP = true;
+    }
+    else {
+        if (inst_ratio < 0.25 || data_ratio > 0.85)
+            IRRIP = false;
+    }
+}

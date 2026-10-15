@@ -37,9 +37,9 @@ void update_POLICY();
 // initialize replacement state
 void CACHE::l2c_initialize_replacement()
 {
-    cout << "Initialize DYN-RRIP state for L2C" << endl;
+    cout << "Initialize DYN-IRRIP state for L2C" << endl;
 
-    // taking DYN-RRIP by on starting phase
+    // taking DYN-IRRIP by on starting phase
     IRRIP = true;
 
     // counter init

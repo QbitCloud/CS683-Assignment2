@@ -1,5 +1,7 @@
 # ChampSim
 
+__NOTE: GITHUB LINK: https://github.com/QbitCloud/CS683-Assignment2/__<br>
+
 ChampSim is a trace-based simulator for microarchitecture research.
 
 Useful trace links:

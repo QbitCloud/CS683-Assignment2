@@ -1,24 +1,303 @@
 #include "cache.h"
 
+#define SPP_IPT_INDEX_BITS 6
+#define SPP_IPT_SIZE (1 << SPP_IPT_INDEX_BITS)
+#define SPP_IP_TAG_BITS 10
+#define SPP_PAGE_TAG_BITS 10
+#define SPP_BLOCKS_PER_PAGE (1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE))
+#define SPP_STRIDE_BITS 7
+#define SPP_SIG_BITS 10
+#define SPP_SIG_SHIFT 3
+#define SPP_PT_SIZE (1 << SPP_SIG_BITS)
+#define SPP_CONF_MAX 3
+#define SPP_UNIFORM_THRESH 3
+#define SPP_PT_THRESH 2
+#define SPP_RPB_SIZE 32
+#define SPP_RPB_TAG_BITS 16
+#define SPP_EPOCH 256
+#define SPP_MIN_DEGREE 1
+#define SPP_MAX_DEGREE 4
+#define SPP_INIT_DEGREE 2
 
-void CACHE::l1d_prefetcher_initialize() 
-{
-    std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
-    std::cout << "------------------------------------------------" << std::endl;
+#define SPP_ACC_HIGH 75
+#define SPP_ACC_MID 50
+#define SPP_ACC_LOW 25
+
+#define SPP_MASK(bits) ((1ULL << (bits)) - 1)
+
+struct SPP_IPT_ENTRY {
+  bool valid;
+  uint16_t ip_tag;
+  uint16_t page_tag;
+  uint8_t last_offset;
+  int8_t last_stride;
+  uint8_t conf;
+  uint16_t sig;
+};
+
+struct SPP_PT_ENTRY {
+  int8_t stride;
+  uint8_t conf;
+};
+
+struct SPP_RPB_ENTRY {
+  bool valid;
+  uint16_t tag;
+};
+
+static SPP_IPT_ENTRY spp_ipt[SPP_IPT_SIZE];
+static SPP_PT_ENTRY spp_pt[SPP_PT_SIZE];
+static SPP_RPB_ENTRY spp_rpb[SPP_RPB_SIZE];
+
+static uint32_t spp_rpb_next;
+static uint32_t spp_issued;
+static uint32_t spp_useful;
+static uint32_t spp_degree;
+
+static uint64_t spp_stat_uniform_pf;
+static uint64_t spp_stat_pattern_pf;
+static uint64_t spp_stat_epochs_at_degree[SPP_MAX_DEGREE + 1];
+static uint64_t spp_stat_useful;
+
+static inline uint32_t spp_ipt_index(uint64_t ip) {
+  return (ip ^ (ip >> SPP_IPT_INDEX_BITS) ^ (ip >> (2 * SPP_IPT_INDEX_BITS))) &
+         SPP_MASK(SPP_IPT_INDEX_BITS);
 }
 
-void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
-{
-   
+static inline uint16_t spp_ip_tag(uint64_t ip) {
+  return (ip >> SPP_IPT_INDEX_BITS) & SPP_MASK(SPP_IP_TAG_BITS);
 }
 
-void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
-{
-	return; //metadata_in;
+static inline uint16_t spp_update_sig(uint16_t sig, int stride) {
+  return ((sig << SPP_SIG_SHIFT) ^ (stride & SPP_MASK(SPP_STRIDE_BITS))) &
+         SPP_MASK(SPP_SIG_BITS);
 }
 
-void CACHE::l1d_prefetcher_final_stats()
-{
-
+static inline uint16_t spp_rpb_tag(uint64_t cl_addr) {
+  return cl_addr & SPP_MASK(SPP_RPB_TAG_BITS);
 }
+
+static void spp_rpb_insert(uint64_t cl_addr) {
+  spp_rpb[spp_rpb_next].valid = true;
+  spp_rpb[spp_rpb_next].tag = spp_rpb_tag(cl_addr);
+  spp_rpb_next = (spp_rpb_next + 1) % SPP_RPB_SIZE;
+}
+
+static bool spp_rpb_contains(uint64_t cl_addr) {
+  uint16_t tag = spp_rpb_tag(cl_addr);
+  for (int i = 0; i < SPP_RPB_SIZE; i++)
+    if (spp_rpb[i].valid && spp_rpb[i].tag == tag)
+      return true;
+  return false;
+}
+
+static bool spp_rpb_check(uint64_t cl_addr) {
+  uint16_t tag = spp_rpb_tag(cl_addr);
+  for (int i = 0; i < SPP_RPB_SIZE; i++) {
+    if (spp_rpb[i].valid && spp_rpb[i].tag == tag) {
+      spp_rpb[i].valid = false;
+      return true;
+    }
+  }
+  return false;
+}
+
+void CACHE::l1d_prefetcher_initialize() {
+  std::cout << "------------------------------------------------" << std::endl;
+  std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
+  std::cout << "------------------------------------------------" << std::endl;
+
+  for (int i = 0; i < SPP_IPT_SIZE; i++)
+    spp_ipt[i] = SPP_IPT_ENTRY();
+  for (int i = 0; i < SPP_PT_SIZE; i++)
+    spp_pt[i] = SPP_PT_ENTRY();
+  for (int i = 0; i < SPP_RPB_SIZE; i++)
+    spp_rpb[i] = SPP_RPB_ENTRY();
+
+  spp_rpb_next = 0;
+  spp_issued = 0;
+  spp_useful = 0;
+  spp_degree = SPP_INIT_DEGREE;
+
+  spp_stat_uniform_pf = 0;
+  spp_stat_pattern_pf = 0;
+  spp_stat_useful = 0;
+  for (int d = 0; d <= SPP_MAX_DEGREE; d++)
+    spp_stat_epochs_at_degree[d] = 0;
+
+  std::cout << "SPP config: IPT=" << SPP_IPT_SIZE << " PT=" << SPP_PT_SIZE
+            << " sig_bits=" << SPP_SIG_BITS << " RPB=" << SPP_RPB_SIZE
+            << " epoch=" << SPP_EPOCH << " degree=" << SPP_MIN_DEGREE << ".."
+            << SPP_MAX_DEGREE << std::endl;
+}
+
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip,
+                                   uint8_t cache_hit, uint8_t type,
+                                   uint8_t critical_ip_flag) {
+
+  if (type != LOAD)
+    return;
+
+  uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+  uint64_t page = addr >> LOG2_PAGE_SIZE;
+  int offset = cl_addr & (SPP_BLOCKS_PER_PAGE - 1);
+  uint16_t page_tag = page & SPP_MASK(SPP_PAGE_TAG_BITS);
+
+  if (spp_rpb_check(cl_addr)) {
+    spp_useful++;
+    if (warmup_complete[cpu])
+      spp_stat_useful++;
+  }
+
+  SPP_IPT_ENTRY &e = spp_ipt[spp_ipt_index(ip)];
+  uint16_t ip_tag = spp_ip_tag(ip);
+
+  if (!e.valid || e.ip_tag != ip_tag) {
+    e.valid = true;
+    e.ip_tag = ip_tag;
+    e.page_tag = page_tag;
+    e.last_offset = offset;
+    e.last_stride = 0;
+    e.conf = 0;
+    e.sig = 0;
+    return;
+  }
+
+  if (e.page_tag != page_tag) {
+    e.page_tag = page_tag;
+    e.last_offset = offset;
+    return;
+  }
+
+  int stride = offset - (int)e.last_offset;
+  if (stride == 0)
+    return;
+
+  if (stride == e.last_stride) {
+    if (e.conf < SPP_CONF_MAX)
+      e.conf++;
+  } else {
+    e.conf = 0;
+  }
+
+  SPP_PT_ENTRY &p = spp_pt[e.sig];
+  if (p.stride == stride) {
+    if (p.conf < SPP_CONF_MAX)
+      p.conf++;
+  } else if (p.conf > 0) {
+    p.conf--;
+  } else {
+    p.stride = stride;
+    p.conf = 1;
+  }
+
+  e.sig = spp_update_sig(e.sig, stride);
+  e.last_stride = stride;
+  e.last_offset = offset;
+
+  auto issue = [&](int target, bool from_uniform) -> bool {
+    if (target < 0 || target >= SPP_BLOCKS_PER_PAGE)
+      return false;
+
+    uint64_t pf_addr =
+        (page << LOG2_PAGE_SIZE) | ((uint64_t)target << LOG2_BLOCK_SIZE);
+    uint64_t pf_cl = pf_addr >> LOG2_BLOCK_SIZE;
+
+    if (spp_rpb_contains(pf_cl))
+      return true;
+
+    int fill_level = (MSHR.occupancy < (MSHR.SIZE >> 1)) ? FILL_L1 : FILL_L2;
+
+    if (!prefetch_line(ip, addr, pf_addr, fill_level, 0))
+      return false;
+
+    spp_rpb_insert(pf_cl);
+    spp_issued++;
+    if (warmup_complete[cpu]) {
+      if (from_uniform)
+        spp_stat_uniform_pf++;
+      else
+        spp_stat_pattern_pf++;
+    }
+    return true;
+  };
+
+  SPP_PT_ENTRY &next = spp_pt[e.sig];
+  bool pt_veto = (next.conf == SPP_CONF_MAX) && (next.stride != e.last_stride);
+  bool uniform = (e.conf >= SPP_UNIFORM_THRESH) && !pt_veto;
+
+  if (uniform) {
+
+    for (uint32_t k = 1; k <= spp_degree; k++)
+      if (!issue(offset + (int)k * stride, true))
+        break;
+  } else {
+
+    uint16_t s = e.sig;
+    int target = offset;
+    for (uint32_t k = 0; k < spp_degree; k++) {
+      if (spp_pt[s].conf < SPP_PT_THRESH)
+        break;
+      int d = spp_pt[s].stride;
+      target += d;
+      if (!issue(target, false))
+        break;
+      s = spp_update_sig(s, d);
+    }
+  }
+
+  if (spp_issued >= SPP_EPOCH) {
+    uint32_t accuracy = spp_useful * 100 / spp_issued;
+
+    if (accuracy >= SPP_ACC_HIGH)
+      spp_degree = 4;
+    else if (accuracy >= SPP_ACC_MID)
+      spp_degree = 3;
+    else if (accuracy >= SPP_ACC_LOW)
+      spp_degree = 2;
+    else
+      spp_degree = 1;
+
+    if (warmup_complete[cpu])
+      spp_stat_epochs_at_degree[spp_degree]++;
+
+    spp_issued = 0;
+    spp_useful = 0;
+  }
+}
+
+void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr,
+                                      uint32_t set, uint32_t way,
+                                      uint8_t prefetch, uint64_t v_evicted_addr,
+                                      uint64_t evicted_addr,
+                                      uint32_t metadata_in) {
+  return;
+}
+
+void CACHE::l1d_prefetcher_final_stats() {
+  uint64_t issued = spp_stat_uniform_pf + spp_stat_pattern_pf;
+
+  std::cout << "CPU " << cpu << " L1D SPP final stats (measured phase only)"
+            << std::endl;
+  std::cout << "SPP issued: " << issued << "  uniform: " << spp_stat_uniform_pf
+            << "  pattern: " << spp_stat_pattern_pf << std::endl;
+  std::cout << "SPP useful (own checker): " << spp_stat_useful << "  accuracy: "
+            << (issued ? 100.0 * spp_stat_useful / issued : 0.0) << "%"
+            << std::endl;
+  std::cout << "SPP epochs at degree 1/2/3/4: " << spp_stat_epochs_at_degree[1]
+            << " / " << spp_stat_epochs_at_degree[2] << " / "
+            << spp_stat_epochs_at_degree[3] << " / "
+            << spp_stat_epochs_at_degree[4] << std::endl;
+  std::cout << "SPP final degree: " << spp_degree << std::endl;
+}
+
+
+
+
+
+
+
+
+
+
+
